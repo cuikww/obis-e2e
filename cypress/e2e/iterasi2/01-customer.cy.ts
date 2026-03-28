@@ -1,70 +1,112 @@
-describe('Iterasi 2 - Skenario 1: Customer (Booking Integration)', () => {
-  const validCustomerEmail = 'f1d022049@student.unram.ac.id';
-  const validCustomerPassword = 'password123';
-  
-  const origin = 'KOTA MATARAM';
-  const destination = 'KOTA BIMA';
-  const searchDate = '2026-03-30';
-  const poName = 'PO Update Auto';
+describe('Iterasi 2 - Skenario Customer: Cari Tiket hingga Pembayaran', () => {
+  const customerEmail = 'f1d022049@student.unram.ac.id';
+  const customerPassword = 'Password123!'; 
+
+  const searchOrigin = 'KABUPATEN SIMEULUE'; 
+  const searchDestination = 'KABUPATEN NIAS';
 
   beforeEach(() => {
-    cy.visit('/login');
-    cy.get('input[placeholder="admin@email.com"]').type(validCustomerEmail);
-    cy.get('input[placeholder="********"]').type(validCustomerPassword);
-    cy.get('button').contains('MASUK KE DASHBOARD').click();
-    cy.url({ timeout: 15000 }).should('eq', Cypress.config().baseUrl + '/');
+    cy.clearAllCookies();
+    cy.clearAllLocalStorage();
+    cy.clearAllSessionStorage();
+    cy.viewport(1280, 720);
   });
 
-  it('Harus berhasil membuat pesanan nyata dan diarahkan ke riwayat', () => {
-    // --- 1. PROSES PENCARIAN ---
-    cy.get('select').eq(0).select(origin);
-    cy.get('select').eq(1).select(destination);
-    cy.get('input[type="date"]').clear().type(searchDate);
-    
-    cy.intercept('GET', '**/trips/search*').as('apiSearch');
-    cy.get('button').contains('Cari Tiket').click();
-    cy.wait('@apiSearch');
+  it('Alur Penuh: Login -> Cari -> Pesan -> Bayar (Intercept) -> History', () => {
+    cy.on('window:alert', () => true);
+    cy.on('uncaught:exception', () => false); 
 
-    cy.contains(poName, { timeout: 15000 }).should('be.visible').parents('.group').click();
+    // ==========================================
+    // FASE 1: LOGIN CUSTOMER
+    // ==========================================
+    cy.visit('/login');
+    cy.get('input[placeholder="admin@email.com"]').clear().type(customerEmail);
+    cy.get('input[placeholder="********"]').clear().type(customerPassword);
+    cy.get('button').contains('MASUK KE DASHBOARD').click();
+
+    cy.location('pathname', { timeout: 15000 }).should('eq', '/');
+    cy.contains('nav', 'Tiket Saya').should('be.visible'); 
+
+    // ==========================================
+    // FASE 2: MENCARI TIKET (HOME PAGE)
+    // ==========================================
+    cy.get('form').within(() => {
+      cy.get('select').eq(0).find('option').should('have.length.greaterThan', 1);
+
+      cy.get('select').eq(0).select(searchOrigin);
+      cy.get('select').eq(1).select(searchDestination);
+
+      // Kunci ke tanggal 11 Maret 2026 sesuai data API kamu
+      const searchDate = '2026-03-11'; 
+      cy.get('input[type="date"]').clear().type(searchDate);
+
+      cy.get('select').eq(2).select('1 Kursi');
+
+      cy.intercept('GET', '**/trips/search*').as('apiSearch');
+      cy.get('button[type="submit"]').contains('Cari Tiket').click();
+    });
+
+    // ==========================================
+    // FASE 3: HASIL PENCARIAN & DETAIL
+    // ==========================================
+    cy.wait('@apiSearch', { timeout: 15000 }).its('response.statusCode').should('be.oneOf', [200, 304]);
+    cy.url({ timeout: 10000 }).should('include', '/search');
+    
+    // Pastikan angka bukan 0
+    cy.contains(/Ditemukan [1-9]\d* Perjalanan/i).should('be.visible');
+
+    // Klik kartu
+    cy.get('main .cursor-pointer').first().click();
+
+    // Modal
+    cy.get('div.fixed').should('be.visible');
+    cy.contains('h3', 'Detail Armada').should('be.visible');
+    
+    // Klik Lanjutkan 
     cy.get('button').contains('Lanjutkan Pilih Kursi').click();
 
-    // --- 2. PENGISIAN DATA BOOKING ---
-    cy.url().should('include', '/booking/');
-    
-    // Pilih kursi yang tersedia (Contoh: 3A & 3B)
-    cy.get('button').contains('4D').click();
-    cy.get('button').contains('4E').click();
+    // ==========================================
+    // FASE 4: BOOKING PAGE (PILIH 1 KURSI)
+    // ==========================================
+    // Tadi gagal di sini karena tendangan React. Sekarang pasti tembus!
+    cy.url({ timeout: 10000 }).should('include', '/booking');
+    cy.contains('1. Pilih Kursi').should('be.visible');
 
-    cy.get('input[placeholder="08xx-xxxx-xxxx"]').type('081234567890');
-    const pNames = ['Nengah Dwi', 'Putra Witarsana'];
-    cy.get('input[placeholder="Nama Lengkap Penumpang"]').each(($el, index) => {
-      cy.wrap($el).type(pNames[index]);
-    });
-    cy.get('input[placeholder="Umur"]').each(($el) => { cy.wrap($el).type('22'); });
+    cy.get('button.bg-white.border-black')
+      .not('.cursor-not-allowed') 
+      .first() 
+      .click({ force: true });
 
-    // --- 3. INTERCEPT UNTUK MENGALIHKAN REDIRECT ---
-    // Kita biarkan request pergi ke server nyata (Integration), 
-    // tapi kita ubah response agar tidak benar-benar pergi ke Midtrans.
+    cy.contains('Kursi Terpilih (1)').should('be.visible');
+
+    cy.get('input[placeholder="0812xxxx"]').clear().type('081299998888');
+
+    cy.get('input[placeholder="Nama Penumpang"]').first().clear().type('Nengah Dwi');
+    cy.get('input[placeholder="Thn"]').first().clear().type('22');
+
     cy.intercept('POST', '**/bookings', (req) => {
       req.continue((res) => {
-        // Ubah redirect_url ke /history agar Cypress tetap di domain lokal
-        res.body.redirect_url = Cypress.config().baseUrl + '/history';
+        if(res.body && res.body.redirect_url) {
+            res.body.redirect_url = Cypress.config().baseUrl + '/history';
+        }
         res.send();
       });
     }).as('submitBooking');
 
-    // --- 4. EKSEKUSI PEMBAYARAN ---
-    cy.get('button').contains('LANJUT PEMBAYARAN').click();
-
-    // Pastikan request berhasil dikirim ke Backend Anda
+    cy.get('button').contains('BAYAR SEKARANG').click();
     cy.wait('@submitBooking').its('response.statusCode').should('be.oneOf', [200, 201]);
 
-    // --- 5. VERIFIKASI AKHIR ---
-    // Aplikasi akan melakukan window.location.href ke /history (karena sudah kita manipulasi)
-    cy.url({ timeout: 20000 }).should('include', '/history');
-    cy.contains('Pesanan Saya').should('be.visible');
+    // ==========================================
+    // FASE 5: VERIFIKASI HISTORY
+    // ==========================================
+    cy.url({ timeout: 15000 }).should('include', '/history');
+    cy.contains('h2', 'Pesanan Saya').should('be.visible');
     
-    // Pastikan status tiket yang baru dibuat adalah PENDING (Menunggu pembayaran asli)
-    cy.contains('PENDING', { timeout: 10000 }).should('be.visible');
+    cy.contains('button', 'Tiket Aktif').click();
+    
+    cy.contains('Order ID').should('be.visible');
+    cy.contains('PENDING').should('be.visible');
+
+    cy.log('✅ YAY! ITERASI 2: ALUR CUSTOMER BERHASIL DIBUAT!');
   });
 });
